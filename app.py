@@ -1,258 +1,3 @@
-import streamlit as st
-import fitz
-import faiss
-import numpy as np
-import os
-from sentence_transformers import SentenceTransformer
-from groq import Groq
-
-
-# -----------------------------
-# Page Configuration
-# -----------------------------
-
-st.set_page_config(
-    page_title="HR Policy Assistant",
-    page_icon="📘",
-    layout="wide"
-)
-
-
-st.title("📘 HR Policy Assistant")
-
-st.write(
-    "Upload your HR Policy PDF and ask questions. "
-    "The assistant answers only from your document."
-)
-
-
-# -----------------------------
-# Load Embedding Model
-# -----------------------------
-
-@st.cache_resource
-def load_embedding_model():
-
-    return SentenceTransformer(
-        "all-MiniLM-L6-v2"
-    )
-
-
-embedding_model = load_embedding_model()
-
-
-
-# -----------------------------
-# Get Groq API Key from Secrets
-# -----------------------------
-
-try:
-    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-
-except Exception:
-
-    GROQ_API_KEY = os.getenv(
-        "GROQ_API_KEY"
-    )
-
-
-
-# -----------------------------
-# Extract PDF Text
-# -----------------------------
-
-def extract_text(pdf_file):
-
-    document = fitz.open(
-        stream=pdf_file.read(),
-        filetype="pdf"
-    )
-
-    text = ""
-
-    for page in document:
-
-        text += page.get_text()
-
-
-    return text
-
-
-
-# -----------------------------
-# Text Chunking
-# -----------------------------
-
-def chunk_text(
-        text,
-        chunk_size=800):
-
-    words = text.split()
-
-    chunks=[]
-
-    for i in range(
-        0,
-        len(words),
-        chunk_size
-    ):
-
-        chunks.append(
-            " ".join(
-                words[i:i+chunk_size]
-            )
-        )
-
-
-    return chunks
-
-
-
-
-# -----------------------------
-# Create FAISS Vector Database
-# -----------------------------
-
-def create_vector_store(chunks):
-
-    embeddings = embedding_model.encode(
-        chunks
-    )
-
-
-    embeddings = np.array(
-        embeddings
-    ).astype("float32")
-
-
-    dimension = embeddings.shape[1]
-
-
-    index = faiss.IndexFlatL2(
-        dimension
-    )
-
-
-    index.add(
-        embeddings
-    )
-
-
-    return index
-
-
-
-# -----------------------------
-# Retrieve Relevant Information
-# -----------------------------
-
-def retrieve_answer_context(
-        question,
-        chunks,
-        index):
-
-
-    query_embedding = embedding_model.encode(
-        [question]
-    )
-
-
-    query_embedding = np.array(
-        query_embedding
-    ).astype("float32")
-
-
-    distances, indexes = index.search(
-        query_embedding,
-        4
-    )
-
-
-    results=[]
-
-
-    for idx in indexes[0]:
-
-        results.append(
-            chunks[idx]
-        )
-
-
-    return "\n\n".join(results)
-
-
-
-
-# -----------------------------
-# Groq LLM Response
-# -----------------------------
-
-def generate_response(
-        question,
-        context):
-
-
-    client = Groq(
-        api_key=GROQ_API_KEY
-    )
-
-
-    prompt=f"""
-
-You are an HR Policy Assistant.
-
-Answer ONLY using the provided HR policy context.
-
-If the answer is not available in the policy,
-say:
-
-"I could not find this information in the HR policy."
-
-
-HR POLICY CONTEXT:
-
-{context}
-
-
-QUESTION:
-
-{question}
-
-"""
-
-
-    response = client.chat.completions.create(
-
-        model="openai/gpt-oss-20b",
-
-        messages=[
-            {
-                "role":"user",
-                "content":prompt
-            }
-        ],
-
-        temperature=0.2
-
-    )
-
-
-    return response.choices[0].message.content
-
-
-
-
-# -----------------------------
-# Upload PDF
-# -----------------------------
-
-uploaded_file = st.sidebar.file_uploader(
-    "Upload HR Policy PDF",
-    type="pdf"
-)
-
-
-
 # -----------------------------
 # Main App
 # -----------------------------
@@ -285,14 +30,85 @@ if uploaded_file:
     )
 
 
+    # -----------------------------
+    # Sample Questions
+    # -----------------------------
 
-    question = st.text_input(
-        "Ask your HR question:"
+    st.subheader(
+        "💡 Sample Questions"
+    )
+
+
+    sample_questions = [
+
+        "What is the annual leave policy?",
+
+        "How many sick leaves are allowed?",
+
+        "What are the working hours?",
+
+        "What is the probation period?",
+
+        "What is the termination procedure?",
+
+        "What employee benefits are available?",
+
+        "What is the maternity leave policy?",
+
+        "How is overtime calculated?",
+
+        "What is the promotion policy?",
+
+        "What is the attendance policy?"
+
+    ]
+
+
+    selected_question = None
+
+
+    cols = st.columns(2)
+
+
+    for index, question in enumerate(sample_questions):
+
+        with cols[index % 2]:
+
+            if st.button(
+                question,
+                use_container_width=True
+            ):
+
+                selected_question = question
+
+
+
+    st.divider()
+
+
+
+    # -----------------------------
+    # Manual Question Input
+    # -----------------------------
+
+    manual_question = st.text_input(
+        "✍️ Ask your HR question:"
+    )
+
+
+    # Priority:
+    # Clicked question first,
+    # otherwise manual input
+
+    final_question = (
+        selected_question
+        if selected_question
+        else manual_question
     )
 
 
 
-    if question:
+    if final_question:
 
 
         if not GROQ_API_KEY:
@@ -311,14 +127,14 @@ if uploaded_file:
 
 
                 context = retrieve_answer_context(
-                    question,
+                    final_question,
                     chunks,
                     vector_index
                 )
 
 
                 answer = generate_response(
-                    question,
+                    final_question,
                     context
                 )
 
@@ -331,6 +147,7 @@ if uploaded_file:
             st.write(
                 answer
             )
+
 
 
 else:
