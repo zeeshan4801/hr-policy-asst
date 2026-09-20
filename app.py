@@ -2,6 +2,7 @@ import streamlit as st
 import fitz
 import faiss
 import numpy as np
+import os
 from sentence_transformers import SentenceTransformer
 from groq import Groq
 
@@ -18,6 +19,7 @@ st.set_page_config(
 
 
 st.title("📘 HR Policy Assistant")
+
 st.write(
     "Upload your HR Policy PDF and ask questions. "
     "The assistant answers only from your document."
@@ -25,21 +27,33 @@ st.write(
 
 
 # -----------------------------
-# Load Models
+# Load Embedding Model
 # -----------------------------
 
 @st.cache_resource
 def load_embedding_model():
 
-    model = SentenceTransformer(
+    return SentenceTransformer(
         "all-MiniLM-L6-v2"
     )
 
-    return model
-
-
 
 embedding_model = load_embedding_model()
+
+
+
+# -----------------------------
+# Get Groq API Key from Secrets
+# -----------------------------
+
+try:
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+
+except Exception:
+
+    GROQ_API_KEY = os.getenv(
+        "GROQ_API_KEY"
+    )
 
 
 
@@ -49,14 +63,15 @@ embedding_model = load_embedding_model()
 
 def extract_text(pdf_file):
 
-    doc = fitz.open(
+    document = fitz.open(
         stream=pdf_file.read(),
         filetype="pdf"
     )
 
     text = ""
 
-    for page in doc:
+    for page in document:
+
         text += page.get_text()
 
 
@@ -65,34 +80,40 @@ def extract_text(pdf_file):
 
 
 # -----------------------------
-# Chunk Text
+# Text Chunking
 # -----------------------------
 
-def chunk_text(text, size=800):
+def chunk_text(
+        text,
+        chunk_size=800):
 
     words = text.split()
 
     chunks=[]
 
-    for i in range(0,len(words),size):
+    for i in range(
+        0,
+        len(words),
+        chunk_size
+    ):
 
-        chunk=" ".join(
-            words[i:i+size]
+        chunks.append(
+            " ".join(
+                words[i:i+chunk_size]
+            )
         )
-
-        chunks.append(chunk)
 
 
     return chunks
 
 
 
+
 # -----------------------------
-# Create FAISS Index
+# Create FAISS Vector Database
 # -----------------------------
 
 def create_vector_store(chunks):
-
 
     embeddings = embedding_model.encode(
         chunks
@@ -117,19 +138,18 @@ def create_vector_store(chunks):
     )
 
 
-    return index, embeddings
+    return index
 
 
 
 # -----------------------------
-# Retrieve Relevant Chunks
+# Retrieve Relevant Information
 # -----------------------------
 
-def search_policy(
+def retrieve_answer_context(
         question,
         chunks,
-        index,
-        k=4):
+        index):
 
 
     query_embedding = embedding_model.encode(
@@ -137,43 +157,43 @@ def search_policy(
     )
 
 
-    query_embedding=np.array(
+    query_embedding = np.array(
         query_embedding
     ).astype("float32")
 
 
-    distances,indices=index.search(
+    distances, indexes = index.search(
         query_embedding,
-        k
+        4
     )
 
 
     results=[]
 
 
-    for i in indices[0]:
+    for idx in indexes[0]:
 
         results.append(
-            chunks[i]
+            chunks[idx]
         )
 
 
-    return results
+    return "\n\n".join(results)
+
 
 
 
 # -----------------------------
-# Groq Answer
+# Groq LLM Response
 # -----------------------------
 
-def ask_groq(
+def generate_response(
         question,
-        context,
-        api_key):
+        context):
 
 
     client = Groq(
-        api_key=api_key
+        api_key=GROQ_API_KEY
     )
 
 
@@ -181,9 +201,9 @@ def ask_groq(
 
 You are an HR Policy Assistant.
 
-Answer the question ONLY using the provided HR policy context.
+Answer ONLY using the provided HR policy context.
 
-If the answer is not available in the document,
+If the answer is not available in the policy,
 say:
 
 "I could not find this information in the HR policy."
@@ -207,8 +227,8 @@ QUESTION:
 
         messages=[
             {
-            "role":"user",
-            "content":prompt
+                "role":"user",
+                "content":prompt
             }
         ],
 
@@ -223,39 +243,25 @@ QUESTION:
 
 
 # -----------------------------
-# Sidebar
+# Upload PDF
 # -----------------------------
 
-
-with st.sidebar:
-
-    st.header("Settings")
-
-
-    groq_key = st.text_input(
-        "Enter Groq API Key",
-        type="password"
-    )
-
-
-    uploaded_file = st.file_uploader(
-        "Upload HR Policy PDF",
-        type="pdf"
-    )
-
+uploaded_file = st.sidebar.file_uploader(
+    "Upload HR Policy PDF",
+    type="pdf"
+)
 
 
 
 # -----------------------------
-# Main Application
+# Main App
 # -----------------------------
-
 
 if uploaded_file:
 
 
     with st.spinner(
-        "Reading HR Policy..."
+        "Processing HR Policy..."
     ):
 
 
@@ -269,7 +275,7 @@ if uploaded_file:
         )
 
 
-        index,_ = create_vector_store(
+        vector_index = create_vector_store(
             chunks
         )
 
@@ -277,6 +283,7 @@ if uploaded_file:
     st.success(
         "HR Policy Loaded Successfully!"
     )
+
 
 
     question = st.text_input(
@@ -288,41 +295,38 @@ if uploaded_file:
     if question:
 
 
-        if not groq_key:
+        if not GROQ_API_KEY:
 
-            st.warning(
-                "Please enter Groq API Key"
+            st.error(
+                "Groq API Key is missing. Add it in Streamlit Secrets."
             )
+
 
         else:
 
+
             with st.spinner(
-                "Searching policy..."
+                "Searching HR Policy..."
             ):
 
 
-                relevant_chunks = search_policy(
+                context = retrieve_answer_context(
                     question,
                     chunks,
-                    index
+                    vector_index
                 )
 
 
-                context="\n\n".join(
-                    relevant_chunks
-                )
-
-
-                answer = ask_groq(
+                answer = generate_response(
                     question,
-                    context,
-                    groq_key
+                    context
                 )
 
 
             st.subheader(
                 "Answer"
             )
+
 
             st.write(
                 answer
@@ -332,5 +336,5 @@ if uploaded_file:
 else:
 
     st.info(
-        "Please upload HR Policy PDF"
+        "Please upload an HR Policy PDF to start."
     )
